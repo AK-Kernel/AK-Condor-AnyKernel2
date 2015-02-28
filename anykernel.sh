@@ -3,18 +3,19 @@
 
 ## AnyKernel setup
 # EDIFY properties
-kernel.string=AK Kernel Installer
-do.initd=1
+kernel.string=AK Kernel Installer by ak@xda-developers
 do.devicecheck=0
+do.initd=0
+do.modules=1
 do.cleanup=0
-device.name1=hh
-device.name2=hh1
-device.name3=hh2
+device.name1=condor
+device.name2=moto e
+device.name3=CONDOR 
+device.name4=MOTO E
+device.name5=motoe
 
 # shell variables
 block=/dev/block/platform/msm_sdcc.1/by-name/boot;
-modules=/system/lib/modules;
-
 ## end setup
 
 
@@ -25,14 +26,21 @@ bin=/tmp/anykernel/tools;
 split_img=/tmp/anykernel/split_img;
 patch=/tmp/anykernel/patch;
 
-cd $ramdisk;
 chmod -R 755 $bin;
-mkdir -p $split_img;
+mkdir -p $ramdisk $split_img;
+cd $ramdisk;
+
+OUTFD=`ps | grep -v "grep" | grep -oE "update(.*)" | cut -d" " -f3`;
+ui_print() { echo "ui_print $1" >&$OUTFD; echo "ui_print" >&$OUTFD; }
 
 # dump boot and extract ramdisk
 dump_boot() {
   dd if=$block of=/tmp/anykernel/boot.img;
   $bin/unpackbootimg -i /tmp/anykernel/boot.img -o $split_img;
+  if [ $? != 0 ]; then
+    ui_print " "; ui_print "Dumping/unpacking image failed. Aborting...";
+    echo 1 > /tmp/anykernel/exitcode; exit;
+  fi;
   gunzip -c $split_img/boot.img-ramdisk.gz | cpio -i;
 }
 
@@ -52,13 +60,19 @@ write_boot() {
     secondoff=`cat *-secondoff`;
     secondoff="--second_offset $secondoff";
   fi;
-  if [ -f *-dtb ]; then
+  if [ -f /tmp/anykernel/dtb ]; then
+    dtb="--dt /tmp/anykernel/dtb";
+  elif [ -f *-dtb ]; then
     dtb=`ls *-dtb`;
     dtb="--dt $split_img/$dtb";
   fi;
   cd $ramdisk;
-  find . | cpio -o -H newc | gzip > /tmp/anykernel/ramdisk-new.cpio.gz;
+  find . | cpio -H newc -o | gzip > /tmp/anykernel/ramdisk-new.cpio.gz;
   $bin/mkbootimg --kernel /tmp/anykernel/zImage --ramdisk /tmp/anykernel/ramdisk-new.cpio.gz $second --cmdline "$cmdline" --board "$board" --base $base --pagesize $pagesize --kernel_offset $kerneloff --ramdisk_offset $ramdiskoff $secondoff --tags_offset $tagsoff $dtb --output /tmp/anykernel/boot-new.img;
+  if [ $? != 0 -o `wc -c < /tmp/anykernel/boot-new.img` -gt `wc -c < /tmp/anykernel/boot.img` ]; then
+    ui_print " "; ui_print "Repacking image failed. Aborting...";
+    echo 1 > /tmp/anykernel/exitcode; exit;
+  fi;
   dd if=/tmp/anykernel/boot-new.img of=$block;
 }
 
@@ -72,11 +86,15 @@ replace_string() {
   fi;
 }
 
-# insert_line <file> <if search string> <line before string> <inserted line>
+# insert_line <file> <if search string> <before/after> <line match string> <inserted line>
 insert_line() {
   if [ -z "$(grep "$2" $1)" ]; then
-    line=$((`grep -n "$3" $1 | cut -d: -f1` + 1));
-    sed -i $line"s;^;${4};" $1;
+    case $3 in
+      before) offset=0;;
+      after) offset=1;;
+    esac;
+    line=$((`grep -n "$4" $1 | cut -d: -f1` + offset));
+    sed -i "${line}s;^;${5};" $1;
   fi;
 }
 
@@ -84,7 +102,15 @@ insert_line() {
 replace_line() {
   if [ ! -z "$(grep "$2" $1)" ]; then
     line=`grep -n "$2" $1 | cut -d: -f1`;
-    sed -i $line"s;.*;${3};" $1;
+    sed -i "${line}s;.*;${3};" $1;
+  fi;
+}
+
+# remove_line <file> <line match string>
+remove_line() {
+  if [ ! -z "$(grep "$2" $1)" ]; then
+    line=`grep -n "$2" $1 | cut -d: -f1`;
+    sed -i "${line}d" $1;
   fi;
 }
 
@@ -113,27 +139,23 @@ replace_file() {
 ## end methods
 
 
-## AnyKernel install
+## AnyKernel permissions
+# set permissions for included files
+#chmod -R 755 $ramdisk
+#chmod 644 $ramdisk/sbin/media_profiles.xml
 
-# backup old kernel
+## AnyKernel install
 dump_boot;
 
-
-# begin kernel changes
-
-# insert kernel modules
-cp -fp $patch/modules/* $modules
-chmod -R 755 $modules
+# begin ramdisk changes
 
 # adb secure
 backup_file default.prop;
 replace_string default.prop "ro.adb.secure=0" "ro.adb.secure=1" "ro.adb.secure=0";
 replace_string default.prop "ro.secure=0" "ro.secure=1" "ro.secure=0";
 
-# end kernel changes
+# end ramdisk changes
 
-
-# flash ak kernel
 write_boot;
 
 ## end install
